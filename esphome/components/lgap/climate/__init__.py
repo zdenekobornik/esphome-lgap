@@ -51,6 +51,7 @@ CONF_LOCK_TEMPERATURE = "lock_temperature"
 CONF_LOCK_FAN_SPEED = "lock_fan_speed"
 CONF_LOCK_MODE = "lock_mode"
 CONF_POWER_ONLY_MODE = "power_only_mode"
+CONF_MAX_WRITE_RETRIES = "max_write_retries"
 
 CONFIG_SCHEMA = climate.climate_schema(
     LGAP_HVAC_Climate
@@ -59,6 +60,7 @@ CONFIG_SCHEMA = climate.climate_schema(
         cv.GenerateID(CONF_LGAP_ID): cv.use_id(LGAP),
         cv.Optional(CONF_ZONE_NUMBER, default=0): cv.All(cv.int_),
         cv.Optional(CONF_TEMPERATURE_PUBISH_TIME, default="300000ms"): cv.positive_time_period_milliseconds,
+        cv.Optional(CONF_MAX_WRITE_RETRIES, default=10): cv.int_range(min=1, max=30),
         cv.Optional(CONF_SUPPORTS_AUTO_SWING, default=False): cv.boolean,
         cv.Optional(CONF_SUPPORTS_AUTO_FAN, default=False): cv.boolean,
         cv.Optional(CONF_SUPPORTS_QUIET_FAN, default=False): cv.boolean,
@@ -144,6 +146,7 @@ async def to_code(config):
     #set properties of the climate component
     cg.add(var.set_zone_number(config[CONF_ZONE_NUMBER]))
     cg.add(var.set_temperature_publish_time(config[CONF_TEMPERATURE_PUBISH_TIME]))
+    cg.add(var.set_max_write_retries(config[CONF_MAX_WRITE_RETRIES]))
     cg.add(var.set_supports_auto_swing(config[CONF_SUPPORTS_AUTO_SWING]))
     cg.add(var.set_supports_auto_fan(config[CONF_SUPPORTS_AUTO_FAN]))
     cg.add(var.set_supports_quiet_fan(config[CONF_SUPPORTS_QUIET_FAN]))

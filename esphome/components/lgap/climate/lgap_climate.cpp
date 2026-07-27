@@ -434,6 +434,7 @@ namespace esphome
             {
               this->power_state_ = 0;
               this->write_update_pending = true;
+              this->write_retry_count_ = 0;
               this->mode = mode;
               this->publish_state();
             }
@@ -521,6 +522,7 @@ namespace esphome
 
         // Publish updated state
         this->write_update_pending = true;
+        this->write_retry_count_ = 0;
         this->mode = mode;
         this->publish_state();
       }
@@ -577,6 +579,7 @@ namespace esphome
 
           // publish state
           this->write_update_pending = true;
+          this->write_retry_count_ = 0;
           this->fan_mode = fan_mode;
           this->publish_state();
         }
@@ -611,6 +614,7 @@ namespace esphome
 
           // publish state
           this->write_update_pending = true;
+          this->write_retry_count_ = 0;
           this->swing_mode = swing_mode;
           this->publish_state();
         }
@@ -653,6 +657,7 @@ namespace esphome
         this->target_temperature = temp;
 
         this->write_update_pending = true;
+        this->write_retry_count_ = 0;
         this->publish_state();
       }
     }
@@ -689,6 +694,58 @@ namespace esphome
       message[7] = this->parent_->calculate_checksum(message);
     }
 
+    bool LGAPHVACClimate::is_target_state_confirmed(const std::vector<uint8_t> &message)
+    {
+      // Check power state (message[1] bit 0)
+      uint8_t power_state = (message[1] & 1);
+      if (power_state != this->power_state_)
+      {
+        return false;
+      }
+
+      // If requested power state is ON, verify mode, target temperature, and fan speed
+      if (this->power_state_ == 1)
+      {
+        uint8_t mode = (message[6] & 7);
+        if (mode != this->mode_)
+        {
+          return false;
+        }
+
+        uint8_t raw_target = message[7] & 0x0F;
+        float target_temperature = static_cast<float>(raw_target + 15);
+        if (target_temperature != this->target_temperature_)
+        {
+          return false;
+        }
+
+        uint8_t fan_speed = ((message[6] >> 4) & 7);
+        if (this->fan_speed_ != 0 && fan_speed != 0 && fan_speed != this->fan_speed_)
+        {
+          return false;
+        }
+      }
+
+      // Check hardware control lock (message[1] bit 2)
+      bool control_lock = (message[1] & 0x04) != 0;
+      if (control_lock != this->control_lock_)
+      {
+        return false;
+      }
+
+      // Check plasma ion state if supported (message[1] bit 4)
+      if (this->supports_plasma_)
+      {
+        bool plasma = (message[1] & 0x10) != 0;
+        if (plasma != this->plasma_)
+        {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
     // todo: add handling for when mode change is requested but mode is already on with another zone, ie can't choose heat when cool is already on
     void LGAPHVACClimate::handle_on_message_received(std::vector<uint8_t> &message)
     {
@@ -701,7 +758,6 @@ namespace esphome
         return;
 
       bool publish_update = false;
-      bool write_was_pending = this->write_update_pending;
 
       // process clean message as checksum already checked before reaching this point
       uint8_t power_state = (message[1] & 1);
@@ -717,6 +773,42 @@ namespace esphome
       if (error_code != 0)
       {
         ESP_LOGW(TAG, "Zone %d error code: %d", this->zone_number, error_code);
+      }
+
+      // Handle write confirmation or retry if a write command was pending
+      if (this->write_update_pending)
+      {
+        if (this->is_target_state_confirmed(message))
+        {
+          ESP_LOGI(TAG, "Zone %d write command confirmed by AC", this->zone_number);
+          this->write_update_pending = false;
+          this->write_retry_count_ = 0;
+          this->write_cooldown_remaining_ = 1;
+        }
+        else
+        {
+          this->write_retry_count_++;
+          if (this->write_retry_count_ < this->max_write_retries_)
+          {
+            ESP_LOGW(TAG, "Zone %d write command not yet confirmed by AC (attempt %d/%d), retrying...",
+                     this->zone_number, this->write_retry_count_, this->max_write_retries_);
+            // Keep write_update_pending = true to trigger another WRITE frame
+            this->write_update_pending = true;
+          }
+          else
+          {
+            ESP_LOGE(TAG, "Zone %d write command failed after %d attempts, reverting to AC state",
+                     this->zone_number, this->max_write_retries_);
+            this->write_update_pending = false;
+            this->write_retry_count_ = 0;
+            this->write_cooldown_remaining_ = 0;
+          }
+        }
+      }
+      else if (this->write_cooldown_remaining_ > 0)
+      {
+        this->write_cooldown_remaining_--;
+        ESP_LOGV(TAG, "Write cooldown: %d cycles remaining", this->write_cooldown_remaining_);
       }
 
       // Don't update control state from device while a write command is pending
@@ -1149,23 +1241,6 @@ namespace esphome
         this->publish_state();
       }
       
-      // After a WRITE response, start a cooldown period before trusting AC state again.
-      // The AC can be slow to apply commands, so subsequent READ responses may still
-      // report stale state for a few poll cycles.
-      // Use write_was_pending (captured at function entry) so that lock enforcement
-      // setting write_update_pending DURING this function is not prematurely cleared.
-      if (write_was_pending)
-      {
-        ESP_LOGV(TAG, "Write response processed, starting cooldown (2 cycles)");
-        this->write_update_pending = false;
-        this->write_cooldown_remaining_ = 2;
-      }
-      else if (this->write_cooldown_remaining_ > 0)
-      {
-        this->write_cooldown_remaining_--;
-        ESP_LOGV(TAG, "Write cooldown: %d cycles remaining", this->write_cooldown_remaining_);
-      }
-      
       // Mark that we've received at least one state from the AC
       // This enables lock enforcement (skipped on first boot to avoid false warnings)
       if (!this->first_state_received_)
@@ -1267,6 +1342,7 @@ namespace esphome
       {
         this->control_lock_ = state;
         this->write_update_pending = true;
+        this->write_retry_count_ = 0;
         
         // Update switch UI immediately (optimistic update)
         if (this->control_lock_switch_ != nullptr)
@@ -1320,6 +1396,7 @@ namespace esphome
       {
         this->plasma_ = state;
         this->write_update_pending = true;
+        this->write_retry_count_ = 0;
         
         // Update switch UI immediately (optimistic update)
         if (this->plasma_switch_ != nullptr)

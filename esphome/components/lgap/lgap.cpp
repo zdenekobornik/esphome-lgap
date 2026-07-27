@@ -71,16 +71,43 @@ namespace esphome
 
       if (this->state_ == State::REQUEST_NEXT_DEVICE_STATUS)
       {
-        // enable wait time between loops
-        if ((millis() - this->last_loop_time_) < this->loop_wait_time_)
+        // Check if any registered device has a write command pending
+        bool is_write_pending = false;
+        int next_device_index = -1;
+
+        for (size_t i = 0; i < this->devices_.size(); i++)
+        {
+          size_t idx = (this->last_zone_checked_index_ + 1 + i) % this->devices_.size();
+          if (this->devices_[idx]->has_pending_write())
+          {
+            is_write_pending = true;
+            next_device_index = idx;
+            break;
+          }
+        }
+
+        // Spaced inter-frame turnaround (300ms) for write retries to span a 5+ second window for slow PI-485 boards
+        uint16_t required_wait = is_write_pending ? (this->loop_wait_time_ < 300 ? this->loop_wait_time_ : 300) : this->loop_wait_time_;
+
+        if ((millis() - this->last_loop_time_) < required_wait)
           return;
         else
           this->last_loop_time_ = millis();
 
         ESP_LOGV(TAG, "REQUEST_NEXT_DEVICE_STATUS");
 
-        // cycle through zones
-        this->last_zone_checked_index_ = (this->last_zone_checked_index_ + 1) > this->devices_.size() - 1 ? 0 : this->last_zone_checked_index_ + 1;
+        if (is_write_pending)
+        {
+          this->last_zone_checked_index_ = next_device_index;
+          ESP_LOGD(TAG, "Prioritizing write command for zone %d (index %d)",
+                   this->devices_[this->last_zone_checked_index_]->zone_number, this->last_zone_checked_index_);
+        }
+        else
+        {
+          // cycle through zones normally
+          this->last_zone_checked_index_ = (this->last_zone_checked_index_ + 1) > (int)this->devices_.size() - 1 ? 0 : this->last_zone_checked_index_ + 1;
+        }
+
         ESP_LOGV(TAG, "devices_[%d]->zone_number = %d", this->last_zone_checked_index_, this->devices_[this->last_zone_checked_index_]->zone_number);
 
         // retrieve lgap message from device if it has a valid zone number

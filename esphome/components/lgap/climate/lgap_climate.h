@@ -162,6 +162,7 @@ namespace esphome
         void set_zone_power_state_sensor(sensor::Sensor *sensor) { this->zone_power_state_sensor_ = sensor; }
         void set_zone_design_load_sensor(sensor::Sensor *sensor) { this->zone_design_load_sensor_ = sensor; }
         void set_odu_total_load_sensor(sensor::Sensor *sensor) { this->odu_total_load_sensor_ = sensor; }
+        void set_max_write_retries(uint8_t max_retries) { this->max_write_retries_ = max_retries; }
         virtual esphome::climate::ClimateTraits traits() override;
         virtual void control(const esphome::climate::ClimateCall &call) override;
         
@@ -233,6 +234,10 @@ namespace esphome
 
         // optional<float> target_temperature_;
         // optional<float> current_temperature_;
+
+        uint8_t write_retry_count_{0};
+        uint8_t max_write_retries_{10};
+        bool is_target_state_confirmed(const std::vector<uint8_t> &message);
 
         void handle_on_message_received(std::vector<uint8_t> &message) override;
         void handle_generate_lgap_request(std::vector<uint8_t> &message, uint8_t &request_id) override;
